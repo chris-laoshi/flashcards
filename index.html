@@ -1,0 +1,435 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>Teacher Chris Flashcards</title>
+
+    <!-- Tailwind CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = { darkMode: 'media', theme: { extend: {} } };
+    </script>
+
+    <!-- React 18 (UMD) + Babel (so we can write JSX inline) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+
+  <body class="bg-slate-100 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+    <div id="root" class="min-h-screen"></div>
+
+    <script type="text/babel">
+      const { useEffect, useLayoutEffect, useMemo, useRef, useState } = React;
+
+      // ---------- Helpers ----------
+      const uid = () => Math.random().toString(36).slice(2, 9);
+      function shuffle(arr) {
+        const a = [...arr];
+        for (let i = a.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [a[i], a[j]] = [a[j], a[i]];
+        }
+        return a;
+      }
+      function loadDecks() {
+        try {
+          const raw = localStorage.getItem("decks_v2");
+          return raw ? JSON.parse(raw) : [];
+        } catch {
+          return [];
+        }
+      }
+      function saveDecks(decks) {
+        localStorage.setItem("decks_v2", JSON.stringify(decks));
+      }
+      function getLoadUrlFromHash() {
+        const m = location.hash.match(/^#\/load\?url=(.+)$/);
+        return m ? decodeURIComponent(m[1]) : null;
+      }
+      async function loadDeckFromUrl(jsonUrl) {
+        const res = await fetch(jsonUrl, { cache: "no-store" });
+        if (!res.ok) throw new Error("Fetch failed: " + res.status);
+        const data = await res.json();
+        const deck = {
+          id: uid(),
+          name: data.name ?? "Shared Deck",
+          cards: (data.cards ?? []).map((c) => ({
+            id: uid(),
+            image: c.image || "",
+            text: c.text || "",
+            audio: c.audio || ""
+          }))
+        };
+        if (!deck.cards.length) throw new Error("Empty deck");
+        return deck;
+      }
+      function exportDeckJSON(deck) {
+        const json = JSON.stringify(
+          {
+            name: deck.name,
+            cards: deck.cards.map((c) => ({
+              image: c.image || "",
+              text: c.text || "",
+              audio: c.audio || ""
+            }))
+          },
+          null,
+          2
+        );
+        const blob = new Blob([json], { type: "application/json" });
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        const safe = (deck.name || "deck").replace(/[^\w\-]+/g, "_");
+        a.download = safe + ".json";
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }
+      function buildShareLinkFromJsonUrl(publicJsonUrl) {
+        return (
+          location.origin +
+          location.pathname +
+          "#/load?url=" +
+          encodeURIComponent(publicJsonUrl.trim())
+        );
+      }
+
+      // ---------- App ----------
+      function App() {
+        const [decks, setDecks] = useState(() => loadDecks());
+        const [view, setView] = useState({ kind: "home" });
+
+        useEffect(() => saveDecks(decks), [decks]);
+
+        // If link is #/load?url=..., pre-load and jump straight to Review
+        useLayoutEffect(() => {
+          const jsonUrl = getLoadUrlFromHash();
+          if (!jsonUrl) return;
+          (async () => {
+            try {
+              const deck = await loadDeckFromUrl(jsonUrl);
+              setDecks((prev) => [deck, ...prev]);
+              history.replaceState(null, "", location.pathname + "#/review/" + deck.id);
+              setView({ kind: "review", deckId: deck.id });
+            } catch (e) {
+              alert("Could not load shared deck. Please check the link.");
+              history.replaceState(null, "", location.pathname);
+              setView({ kind: "home" });
+            }
+          })();
+        }, []);
+
+        // Tiny hash router
+        useEffect(() => {
+          const applyRoute = () => {
+            const h = location.hash;
+            const mReview = h.match(/^#\/review\/([a-z0-9]+)/i);
+            const mEdit = h.match(/^#\/edit\/([a-z0-9]+)/i);
+            if (mReview) setView({ kind: "review", deckId: mReview[1] });
+            else if (mEdit) setView({ kind: "edit", deckId: mEdit[1] });
+            else if (!getLoadUrlFromHash()) setView({ kind: "home" });
+          };
+          applyRoute();
+          window.addEventListener("hashchange", applyRoute);
+          return () => window.removeEventListener("hashchange", applyRoute);
+        }, []);
+
+        return (
+          <div className="min-h-screen">
+            {view.kind === "home" ? (
+              <Home
+                decks={decks}
+                setDecks={setDecks}
+                goEdit={(id) => (location.hash = "#/edit/" + id)}
+                goReview={(id) => (location.hash = "#/review/" + id)}
+              />
+            ) : view.kind === "edit" ? (
+              (() => {
+                const deck = decks.find((d) => d.id === view.deckId);
+                if (!deck) {
+                  location.hash = "";
+                  return null;
+                }
+                return (
+                  <EditDeck
+                    deck={deck}
+                    updateDeck={(next) =>
+                      setDecks((all) => all.map((d) => (d.id === deck.id ? next : d)))
+                    }
+                    goHome={() => (location.hash = "")}
+                    goReview={() => (location.hash = "#/review/" + deck.id)}
+                  />
+                );
+              })()
+            ) : (
+              (() => {
+                const deck = decks.find((d) => d.id === view.deckId);
+                if (!deck) {
+                  location.hash = "";
+                  return null;
+                }
+                return <Review deck={deck} goBack={() => (location.hash = "")} />;
+              })()
+            )}
+          </div>
+        );
+      }
+
+      // ---------- Home ----------
+      function Home({ decks, setDecks, goEdit, goReview }) {
+        const [newName, setNewName] = useState("");
+
+        const createDeck = () => {
+          const name = newName.trim();
+          if (!name) return;
+          const d = { id: uid(), name, cards: [] };
+          setDecks((all) => [d, ...all]);
+          setNewName("");
+          location.hash = "#/edit/" + d.id;
+        };
+
+        const del = (id) => setDecks((all) => all.filter((d) => d.id !== id));
+
+        return (
+          <div className="min-h-screen flex items-center justify-center p-6 bg-slate-100 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+            <div className="w-full max-w-2xl rounded-2xl shadow-xl p-6 bg-white/95 dark:bg-slate-800">
+              <div className="flex items-center justify-between mb-5">
+                <h1 className="text-3xl font-bold">Teacher Chris Flashcards</h1>
+                <span className="px-2 py-1 text-xs rounded-md border border-slate-300 dark:border-slate-600">🌙/🔆</span>
+              </div>
+
+              <div className="flex gap-2 mb-6">
+                <input
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  placeholder="New deck name (e.g., Unit 5)"
+                  className="flex-1 px-3 py-2 rounded-md border border-slate-300 bg-white text-slate-900 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100"
+                />
+                <button
+                  onClick={createDeck}
+                  className="px-3 py-2 rounded-md border border-indigo-600 text-white bg-indigo-600 hover:bg-indigo-700"
+                >
+                  Create
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                {decks.length === 0 && (
+                  <p className="text-slate-600 dark:text-slate-300">No decks yet. Create one above.</p>
+                )}
+                {decks.map((d) => (
+                  <div
+                    key={d.id}
+                    className="flex items-center justify-between rounded-lg px-3 py-2 border border-slate-200 bg-white dark:border-slate-600 dark:bg-slate-700"
+                  >
+                    <div>
+                      <div className="font-semibold">{d.name}</div>
+                      <div className="text-xs text-slate-500 dark:text-slate-300">{d.cards.length} cards</div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button onClick={() => goEdit(d.id)} className="px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600">Edit</button>
+                      <button onClick={() => goReview(d.id)} className="px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600">Review</button>
+                      <button onClick={() => del(d.id)} className="px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600">Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      // ---------- Shared: Share box ----------
+      function DeckShareBox({ deck }) {
+        const exportJson = () => exportDeckJSON(deck);
+
+        const makeShareFromUrl = () => {
+          const u = prompt("Paste PUBLIC JSON URL (GitHub raw / Gist raw / Drive / Apps Script):");
+          if (!u) return;
+          const finalUrl = buildShareLinkFromJsonUrl(u);
+          navigator.clipboard
+            .writeText(finalUrl)
+            .catch(() => {})
+            .finally(() => {
+              alert("Shareable link copied:\\n\\n" + finalUrl);
+            });
+        };
+
+        const openFromUrl = () => {
+          const u = prompt("Paste PUBLIC JSON URL to open now:");
+          if (!u) return;
+          location.hash = "#/load?url=" + encodeURIComponent(u.trim());
+        };
+
+        return (
+          <div className="mt-6 grid gap-3 sm:grid-cols-3">
+            <button onClick={exportJson} className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600">⬇️ Export JSON</button>
+            <button onClick={makeShareFromUrl} className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600">🔗 Make share link (from JSON URL)</button>
+            <button onClick={openFromUrl} className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600">🔍 Open from JSON URL</button>
+          </div>
+        );
+      }
+
+      // ---------- Edit Deck ----------
+      function EditDeck({ deck, updateDeck, goHome, goReview }) {
+        const [image, setImage] = useState("");
+        const [audio, setAudio] = useState("");
+        const [text, setText] = useState("");
+
+        const add = () => {
+          const t = text.trim();
+          if (!t) return;
+          const c = { id: uid(), image: image.trim(), text: t, audio: audio.trim() };
+          updateDeck({ ...deck, cards: [c, ...deck.cards] });
+          setImage(""); setAudio(""); setText("");
+        };
+
+        const remove = (id) => updateDeck({ ...deck, cards: deck.cards.filter((c) => c.id !== id) });
+
+        return (
+          <div className="min-h-screen flex items-center justify-center p-6 bg-slate-100 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+            <div className="w-full max-w-3xl rounded-2xl shadow-xl p-6 bg-white/95 dark:bg-slate-800">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-2xl font-bold">{deck.name}</h2>
+                <div className="flex gap-2">
+                  <button onClick={goHome} className="px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600">Back</button>
+                  <button onClick={goReview} className="px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600">Review</button>
+                </div>
+              </div>
+
+              <div className="grid sm:grid-cols-3 gap-2 mb-3">
+                <input value={image} onChange={(e) => setImage(e.target.value)} placeholder="Image URL (webp/jpg/png)" className="border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-900 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100" />
+                <input value={audio} onChange={(e) => setAudio(e.target.value)} placeholder="Audio URL (mp3/wav/ogg) — optional" className="border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-900 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100" />
+                <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Term / caption" className="border border-slate-300 rounded-md px-3 py-2 bg-white text-slate-900 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100" />
+              </div>
+              <button onClick={add} className="mb-6 px-3 py-2 rounded-md border border-indigo-600 text-white bg-indigo-600 hover:bg-indigo-700">Add Card</button>
+
+              <div className="grid gap-3">
+                {deck.cards.map((c) => (
+                  <div key={c.id} className="flex items-center justify-between rounded-lg px-3 py-2 border border-slate-200 bg-white dark:border-slate-600 dark:bg-slate-700">
+                    <div className="flex items-center gap-3">
+                      {c.image ? (
+                        <img src={c.image} alt="" className="w-16 h-16 object-cover rounded-md border border-slate-200 dark:border-slate-600" />
+                      ) : (
+                        <div className="w-16 h-16 rounded-md border border-dashed border-slate-300 dark:border-slate-600 grid place-items-center text-xs text-slate-500 dark:text-slate-300">no image</div>
+                      )}
+                      <div>
+                        <div className="font-medium">{c.text || "(no text)"}</div>
+                        {c.audio && <div className="text-xs text-slate-500 dark:text-slate-300 truncate max-w-[220px]">🔈 {c.audio}</div>}
+                      </div>
+                    </div>
+                    <button onClick={() => remove(c.id)} className="px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600">Remove</button>
+                  </div>
+                ))}
+              </div>
+
+              <DeckShareBox deck={deck} />
+            </div>
+          </div>
+        );
+      }
+
+      // ---------- Review ----------
+      function Review({ deck, goBack }) {
+        const [order, setOrder] = useState(() => deck.cards.map((c) => c.id));
+        const [i, setI] = useState(0);
+        const [show, setShow] = useState(false);
+
+        useEffect(() => {
+          setOrder(deck.cards.map((c) => c.id));
+          setI(0);
+          setShow(false);
+        }, [deck.id]);
+
+        const cardsById = useMemo(() => {
+          const m = new Map();
+          deck.cards.forEach((c) => m.set(c.id, c));
+          return m;
+        }, [deck.cards]);
+
+        const current = cardsById.get(order[i]);
+
+        const next = () => { setShow(false); setI((x) => (x + 1) % order.length); };
+        const prev = () => { setShow(false); setI((x) => (x - 1 + order.length) % order.length); };
+        const reshuffle = () => { setOrder((old) => shuffle(old)); setI(0); setShow(false); };
+
+        const audioRef = useRef(null);
+        useEffect(() => {
+          if (show && current?.audio && audioRef.current) {
+            audioRef.current.currentTime = 0;
+            audioRef.current.play().catch(() => {});
+          }
+        }, [show, current?.audio]);
+
+        if (!current) {
+          return (
+            <div className="min-h-screen grid place-items-center p-6">
+              <div className="text-center">
+                <p className="mb-4">This deck has no cards.</p>
+                <button onClick={goBack} className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600">Back</button>
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <div className="min-h-screen flex items-center justify-center p-6 bg-slate-100 text-slate-900 dark:bg-slate-900 dark:text-slate-100">
+            <div className="w-full max-w-3xl rounded-2xl shadow-xl p-6 bg-white/95 dark:bg-slate-800">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <h2 className="text-2xl font-bold">{deck.name}</h2>
+                  <div className="text-sm text-slate-600 dark:text-slate-300">Card {i + 1} of {order.length}</div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={goBack} className="px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600">Back</button>
+                </div>
+              </div>
+
+              <div className="rounded-xl bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 overflow-hidden mb-4" onClick={() => setShow(true)} role="button">
+                {current.image ? (
+                  <img src={current.image} alt="" className="w-full max-h-[60vh] object-contain" />
+                ) : (
+                  <div className="h-[40vh] grid place-items-center text-slate-400">(no image)</div>
+                )}
+              </div>
+
+              <div className="text-center mb-4">
+                {!show ? (
+                  <button onClick={() => setShow(true)} className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600">Show Answer</button>
+                ) : (
+                  <div className="text-2xl font-semibold">{current.text || "(no text)"}</div>
+                )}
+                {show && current.audio && (
+                  <>
+                    <audio ref={audioRef} src={current.audio} preload="auto"></audio>
+                    <div className="mt-2">
+                      <button onClick={() => audioRef.current?.play().catch(() => {})} className="px-2 py-1 rounded-md border border-slate-300 dark:border-slate-600">
+                        🔈 Play audio again
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between">
+                <button onClick={prev} className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600">‹ Previous</button>
+                <button onClick={reshuffle} className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600" title="Shuffle">⟲ Shuffle</button>
+                <button onClick={next} className="px-3 py-2 rounded-md border border-slate-300 dark:border-slate-600">Next ›</button>
+              </div>
+
+              <DeckShareBox deck={deck} />
+            </div>
+          </div>
+        );
+      }
+
+      // Mount app
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
